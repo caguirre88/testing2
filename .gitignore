@@ -1,0 +1,12 @@
+# Maven build directory
+/target/
+
+# Eclipse or IntelliJ project files
+*.iml
+.idea/
+.project
+.classpath
+
+# Compiled class files
+*.class
+
