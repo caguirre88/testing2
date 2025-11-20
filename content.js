@@ -1,11 +1,18 @@
 (() => {
   'use strict';
 
+  if (window.__LI_AUTO_LIKER_RUNNING__) {
+    console.log('[LI Auto Liker] Already running.');
+    return;
+  }
+  window.__LI_AUTO_LIKER_RUNNING__ = true;
+
   /*** ===== Configuration ===== ***/
   const MAX_CLICKS = 400; // total reactions to send
   const CLICK_GAP_MS = 350; // delay between clicks
   const SCROLL_PAUSE_MS = 1100; // wait after each scroll to let content render
   const SCROLL_EVERY_N = 8; // scroll every N clicks to surface more posts
+  const FULL_SCAN_INTERVAL_MS = 4000; // periodic full scan for fresh buttons
 
   // Add any explicit XPaths you want as fallbacks (yours included):
   const FALLBACK_XPATHS = [
@@ -28,8 +35,7 @@
   const hasThumbsUpIcon = (el) => {
     if (!el) return false;
     return !!(
-      el.querySelector('svg[data-test-icon*="thumbs-up"]') ||
-      el.querySelector('use[href*="thumbs-up"]')
+      el.querySelector('svg[data-test-icon*="thumbs-up"], use[href*="thumbs-up"], svg[aria-label*="Like" i]')
     );
   };
 
@@ -101,10 +107,11 @@
     }
   };
 
+  const trace = (...args) => console.log('[LI Auto Liker]', ...args);
+
   /*** ===== Candidate collection ===== ***/
-  // Prefer LinkedIn’s reaction triggers, but also allow aria-label based matches
-  const getCandidates = () => {
-    // First pass: the usual LinkedIn reaction buttons
+  const collectButtons = () => {
+    // Prefer LinkedIn’s reaction triggers, but also allow aria-label based matches
     const primary = Array.from(
       document.querySelectorAll(
         'button.react-button__trigger.social-actions-button,' + // posts
@@ -131,44 +138,76 @@
     const seenSet = new WeakSet(); // buttons we've queued
     let queue = [];
     let done = 0;
+    let lastFullScan = 0;
 
-    const refillQueue = () => {
-      const fresh = getCandidates().filter(
+    const refillQueue = (forceFull = false) => {
+      const now = Date.now();
+      const shouldFullScan = forceFull || now - lastFullScan >= FULL_SCAN_INTERVAL_MS;
+      const candidates = shouldFullScan ? collectButtons() : getVisibleButtonsNearViewport();
+      if (shouldFullScan) lastFullScan = now;
+
+      const fresh = candidates.filter(
         (b) => !clickedSet.has(b) && !seenSet.has(b) && isVisibleEnough(b)
       );
       fresh.forEach((b) => seenSet.add(b));
-      // Put new items at the end of the queue
       queue.push(...fresh);
     };
 
-    // Prime queue
-    refillQueue();
+    const getVisibleButtonsNearViewport = () => {
+      const buttons = collectButtons();
+      const margin = window.innerHeight * 2; // include a buffer below the fold
+      return buttons.filter((btn) => {
+        const rect = btn.getBoundingClientRect();
+        return rect.top <= margin && rect.bottom >= -200 && isVisibleEnough(btn);
+      });
+    };
 
-    // If nothing matched yet, try explicit XPaths
-    if (queue.length === 0) {
-      for (const xp of FALLBACK_XPATHS) {
-        const b = findByXPath(xp);
-        if (b && !clickedSet.has(b) && isLikeButton(b)) {
-          queue.push(b);
-          seenSet.add(b);
+    const observer = new MutationObserver(() => refillQueue());
+
+    const stopObserver = () => {
+      try {
+        observer.disconnect();
+      } catch (e) {
+        console.error('[LI Auto Liker] Failed to disconnect observer', e);
+      }
+    };
+
+    const primeQueue = () => {
+      refillQueue(true);
+      if (queue.length === 0) {
+        for (const xp of FALLBACK_XPATHS) {
+          const b = findByXPath(xp);
+          if (b && !clickedSet.has(b) && isLikeButton(b) && isVisibleEnough(b)) {
+            queue.push(b);
+            seenSet.add(b);
+          }
         }
       }
-    }
+    };
+
+    const startObserver = () => {
+      observer.observe(document.body || document.documentElement, {
+        childList: true,
+        subtree: true
+      });
+    };
+
+    primeQueue();
+    startObserver();
 
     while (done < MAX_CLICKS) {
       if (window.__STOP_LI_CLICKER__) {
-        console.log(`Stopped by user at ${done}/${MAX_CLICKS}.`);
+        trace(`Stopped by user at ${done}/${MAX_CLICKS}.`);
+        stopObserver();
         return;
       }
 
       let btn = queue.shift();
 
       if (!btn) {
-        // No queued candidates—scroll and rescan
         await scrollChunk();
-        refillQueue();
+        refillQueue(true);
         if (!queue.length) {
-          // As a last resort, try XPaths again after scrolling
           for (const xp of FALLBACK_XPATHS) {
             const b = findByXPath(xp);
             if (b && !clickedSet.has(b) && isLikeButton(b) && isVisibleEnough(b)) {
@@ -177,36 +216,33 @@
             }
           }
           if (!queue.length) {
-            console.log('No more Like buttons found. Finishing.');
+            trace('No more Like buttons found. Finishing.');
             break;
           }
         }
         continue;
       }
 
-      // Safety checks before clicking
       if (!isLikeButton(btn) || clickedSet.has(btn)) continue;
 
-      // Bring into view and click
-      btn.scrollIntoView({ block: 'center' });
+      btn.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      await sleep(50);
       btn.click();
       clickedSet.add(btn);
       done++;
-      console.log(`Liked ${done}/${MAX_CLICKS}`, btn);
+      trace(`Liked ${done}/${MAX_CLICKS}`, btn);
 
-      // Pace the clicks
       await sleep(CLICK_GAP_MS + Math.floor(Math.random() * 300));
 
-      // Periodic scroll to load more
       if (done % SCROLL_EVERY_N === 0) {
         await scrollChunk();
-        refillQueue();
+        refillQueue(true);
       } else {
-        // Light refresh to catch items that just rendered without scroll
         refillQueue();
       }
     }
 
-    console.log(`Finished. Sent ${done} like click(s).`);
+    stopObserver();
+    trace(`Finished. Sent ${done} like click(s).`);
   })();
 })();
