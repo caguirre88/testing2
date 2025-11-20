@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "LinkedIn Auto Liker",
+  "version": "1.0.0",
+  "description": "Automatically clicks Like buttons on LinkedIn posts using configurable scrolling and pacing.",
+  "permissions": ["tabs"],
+  "content_scripts": [
+    {
+      "matches": ["https://www.linkedin.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "LinkedIn Auto Liker"
+  }
+}
